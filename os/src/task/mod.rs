@@ -17,6 +17,9 @@ mod task;
 use crate::config::MAX_APP_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use alloc::collections::btree_map::BTreeMap;
+use alloc::vec::Vec;
+use alloc::vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -43,6 +46,7 @@ pub struct TaskManager {
 pub struct TaskManagerInner {
     /// task list
     tasks: [TaskControlBlock; MAX_APP_NUM],
+    syscall_count: Vec<BTreeMap<usize, usize>>,
     /// id of current `Running` task
     current_task: usize,
 }
@@ -64,6 +68,7 @@ lazy_static! {
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
+                    syscall_count: vec![BTreeMap::new(); MAX_APP_NUM],
                     current_task: 0,
                 })
             },
@@ -88,6 +93,20 @@ impl TaskManager {
             __switch(&mut _unused as *mut TaskContext, next_task_cx_ptr);
         }
         panic!("unreachable in run_first_task!");
+    }
+
+    fn add_syscall_count(&self, id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let count = inner.syscall_count[current].entry(id).or_insert(0);
+        *count += 1;
+    }
+
+    fn read_syscall_count(&self, id: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let count = inner.syscall_count[current].entry(id).or_insert(0);
+        *count as isize
     }
 
     /// Change the status of current `Running` task into `Ready`.
@@ -168,4 +187,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Add syscall count for the current app.
+pub fn add_syscall_count(id: usize) {
+    TASK_MANAGER.add_syscall_count(id);
+}
+
+/// Access syscall count for current app.
+pub fn get_syscall_count(id: usize) -> isize {
+    TASK_MANAGER.read_syscall_count(id)
 }
