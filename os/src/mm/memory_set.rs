@@ -35,7 +35,8 @@ lazy_static! {
 }
 /// address space
 pub struct MemorySet {
-    page_table: PageTable,
+    ///  111
+    pub page_table: PageTable,
     areas: Vec<MapArea>,
 }
 
@@ -247,7 +248,6 @@ impl MemorySet {
             false
         }
     }
-
     /// append the area to new_end
     #[allow(unused)]
     pub fn append_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {
@@ -257,6 +257,19 @@ impl MemorySet {
             .find(|area| area.vpn_range.get_start() == start.floor())
         {
             area.append_to(&mut self.page_table, new_end.ceil());
+            true
+        } else {
+            false
+        }
+    }
+    /// unmap a whole area
+    pub fn unmap_area(&mut self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        let area = self
+            .areas
+            .iter_mut()
+            .find(|a| a.vpn_range.get_start() == start && a.vpn_range.get_end() == end);
+        if let Some(a) = area {
+            a.unmap(&mut self.page_table);
             true
         } else {
             false
@@ -289,6 +302,7 @@ impl MapArea {
     }
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         let ppn: PhysPageNum;
+
         match self.map_type {
             MapType::Identical => {
                 ppn = PhysPageNum(vpn.0);
@@ -376,6 +390,24 @@ bitflags! {
         const X = 1 << 3;
         ///Accessible in U mode
         const U = 1 << 4;
+    }
+}
+
+impl MapPermission {
+    /// Convert prot to MapPermission
+    pub fn from_prot(prot: usize) -> Self {
+        let mut permission = MapPermission::empty();
+        if prot & 1 == 1 {
+            permission.insert(MapPermission::R);
+        }
+        if prot & 2 == 2 {
+            permission.insert(MapPermission::W);
+        }
+        if prot & 4 == 4 {
+            permission.insert(MapPermission::X);
+        }
+        permission.insert(MapPermission::U);
+        permission
     }
 }
 

@@ -14,10 +14,15 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+#[allow(unused)]
+use crate::config::PAGE_SIZE_BITS;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, PTEFlags, PageTable, PhysAddr, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
+use alloc::vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -46,6 +51,7 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+    syscall_count: Vec<BTreeMap<usize, usize>>,
 }
 
 lazy_static! {
@@ -64,6 +70,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    syscall_count: vec![BTreeMap::new(); num_app],
                 })
             },
         }
@@ -101,6 +108,53 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let cur = inner.current_task;
         inner.tasks[cur].task_status = TaskStatus::Exited;
+    }
+
+    fn get_addr_in_cur_space(&self, addr: usize) -> Option<(usize, PTEFlags)> {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let token = inner.tasks[cur].memory_set.token();
+        let _page_table = PageTable::from_token(token);
+        let va = VirtAddr::from(addr);
+        let vpn = va.floor();
+        let offset = va.page_offset();
+        // let ppe = page_table.find_pte(vpn);
+        let ppe = inner.tasks[cur].memory_set.translate(VirtPageNum::from(vpn));
+        if let Some(pp) = ppe {
+            let ppn = pp.ppn();
+            let pa = PhysAddr::from(ppn).0;
+            if pp.is_valid() {
+                Some((pa + offset, pp.flags()))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn add_syscall_count(&self, id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        *(inner.syscall_count[cur].entry(id).or_insert(0)) += 1
+    }
+
+    fn read_syscall_count(&self, id: usize) -> usize {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        *(inner.syscall_count[cur].entry(id).or_insert(0))
+    }
+
+    fn insert_in_current(&self, start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.insert_framed_area(start, end, permission);
+    }
+
+    fn unmap_area_in_current(&self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.unmap_area(start, end)
     }
 
     /// Find next task to run and return task id.
@@ -191,6 +245,41 @@ pub fn exit_current_and_run_next() {
 /// Get the current 'Running' task's token.
 pub fn current_user_token() -> usize {
     TASK_MANAGER.get_current_token()
+}
+
+/// Get the physical address by virtual address in current memory set.
+pub fn get_addr_in_cur_space(addr: usize) -> Option<usize> {
+    TASK_MANAGER.get_addr_in_cur_space(addr).map(|c| c.0)
+}
+
+/// Get the physical address by virtual address in current memory set.
+pub fn get_addr_flag_in_cur_space(addr: usize) -> Option<(usize, PTEFlags)> {
+    TASK_MANAGER.get_addr_in_cur_space(addr)
+}
+
+/// Read syscall count of current app.
+pub fn read_syscall_count(id: usize) -> usize {
+    TASK_MANAGER.read_syscall_count(id)
+}
+
+/// Add 1 syscall count to current app.
+pub fn add_syscall_count(id: usize) {
+    TASK_MANAGER.add_syscall_count(id);
+}
+
+/// Check wether the given vpn is mapped.
+pub fn is_vpn_in_space(vpn: usize) -> bool {
+    TASK_MANAGER.get_addr_in_cur_space(vpn << PAGE_SIZE_BITS).is_some()
+}
+
+/// Insert frames in current address space.
+pub fn insert_in_current(start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+    TASK_MANAGER.insert_in_current(start, end, permission);
+}
+
+/// Insert frames in current address space.
+pub fn unmap_area_in_current(start: VirtPageNum, end: VirtPageNum) -> bool{
+    TASK_MANAGER.unmap_area_in_current(start, end)
 }
 
 /// Get the current 'Running' task's trap contexts.
