@@ -23,18 +23,18 @@ mod switch;
 mod task;
 
 use crate::fs::{open_file, OpenFlags};
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 pub use context::TaskContext;
 use lazy_static::*;
 pub use manager::{fetch_task, TaskManager};
 use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
+pub use task::{spawn_new_task, TaskControlBlock, TaskStatus};
 
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 pub use manager::add_task;
 pub use processor::{
-    current_task, current_trap_cx, current_user_token, run_tasks, schedule, take_current_task,
-    Processor,
+    current_task, current_trap_cx, current_user_token, get_phy_addr_in_cur_space, unmap_area_in_current,
+    insert_in_current, is_vpn_in_space, run_tasks, schedule, take_current_task, Processor,
 };
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
@@ -116,7 +116,18 @@ lazy_static! {
     });
 }
 
+/// Get app data from fs by its name
+pub fn get_app_data_by_name(name: &str) -> Option<Vec<u8>> {
+    open_file(name, OpenFlags::RDONLY).map(|i| i.read_all())
+    
+}
+
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
+}
+
+/// update stride
+pub fn add_current_stride() {
+    current_task().unwrap().add_stride();
 }

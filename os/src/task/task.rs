@@ -5,11 +5,13 @@ use crate::config::TRAP_CONTEXT_BASE;
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::task::current_task;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use core::cmp::Ordering;
 
 /// Task control block structure
 ///
@@ -71,6 +73,53 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Task priority
+    pub priority: u8,
+
+    /// Stride
+    pub stride: u8,
+}
+
+const BIGSTRIDE: u8 = 255;
+
+impl PartialEq for TaskControlBlock  {
+    fn eq(&self, other: &Self) -> bool {
+        matches!(self.partial_cmp(other), Some(Ordering::Equal))
+    }
+}
+
+impl PartialOrd for TaskControlBlock {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let self_stride = self.inner_exclusive_access().stride;
+        let other_stride = other.inner_exclusive_access().stride;
+        Some(match self_stride.cmp(&other_stride) {
+            Ordering::Less => {
+                if other_stride - self_stride > BIGSTRIDE / 2 {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            Ordering::Greater => {
+                if self_stride - other_stride > BIGSTRIDE / 2 {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+
+            }
+            Ordering::Equal => Ordering::Equal
+        })
+    }
+}
+
+impl Eq for TaskControlBlock {}
+
+impl Ord for TaskControlBlock {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
 }
 
 impl TaskControlBlockInner {
@@ -135,6 +184,8 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         };
@@ -216,6 +267,8 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    priority: 16,
+                    stride: 0
                 })
             },
         });
@@ -234,6 +287,18 @@ impl TaskControlBlock {
     /// get pid of process
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+
+    /// Add stride for task.
+    pub fn add_stride(&self) {
+        let mut inner = self.inner_exclusive_access();
+        inner.stride += BIGSTRIDE / inner.priority;
+    }
+
+    /// set priority
+    pub fn set_priority(&self, priority: u8) {
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = priority;
     }
 
     /// change the location of the program break. return None if failed.
@@ -261,6 +326,18 @@ impl TaskControlBlock {
             None
         }
     }
+}
+
+/// Spawn a new task and set it's parent as current task.
+pub fn spawn_new_task(elf_data: &[u8]) -> Arc<TaskControlBlock> {
+    let new_task = Arc::new(TaskControlBlock::new(elf_data));
+    let mut new_task_inner = new_task.inner_exclusive_access();
+    let parent = current_task().unwrap();
+    new_task_inner.parent = Some(Arc::downgrade(&parent));
+    drop(new_task_inner);
+    let mut parent_inner = parent.inner_exclusive_access();
+    parent_inner.children.push(new_task.clone());
+    new_task
 }
 
 #[derive(Copy, Clone, PartialEq)]

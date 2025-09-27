@@ -7,6 +7,8 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use crate::config::PAGE_SIZE_BITS;
+use crate::mm::{ MapPermission, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
@@ -58,6 +60,7 @@ pub fn run_tasks() {
         if let Some(task) = fetch_task() {
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
             // access coming task TCB exclusively
+            task.add_stride();
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
@@ -84,6 +87,48 @@ pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
 /// Get a copy of the current task
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
     PROCESSOR.exclusive_access().current()
+}
+
+/// Get the physical address of an virtual address in current app's space
+pub fn get_phy_addr_in_cur_space(addr: VirtAddr) -> Option<usize> {
+    let current = PROCESSOR.exclusive_access().current();
+    let vpn = addr.floor();
+    let offset = addr.page_offset();
+    if let Some(app) = current {
+        let inner = app.inner_exclusive_access();
+        let ppe_opt = inner
+            .memory_set
+            .translate(vpn);
+        if let Some(ppe) = ppe_opt {
+            if ppe.is_valid() && ppe.writable() {
+                Some((ppe.ppn().0 << PAGE_SIZE_BITS) + offset)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Insert area to current address space
+pub fn insert_in_current(start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+    let current = current_task().unwrap();
+    current.inner_exclusive_access().memory_set.insert_framed_area(start, end, permission);
+}
+
+/// Check wether a virtual page number in this space.
+pub fn is_vpn_in_space(vpn: usize) -> bool {
+    get_phy_addr_in_cur_space(VirtAddr::from(vpn << PAGE_SIZE_BITS)).is_some()
+}
+
+/// Unmap a whole area. Assumed that start to end as a whole area.
+pub fn unmap_area_in_current(start: VirtPageNum, _end: VirtPageNum) {
+    let current = current_task().unwrap();
+    current.inner_exclusive_access().memory_set.remove_area_with_start_vpn(start);
+
 }
 
 /// Get the current user token(addr of page table)

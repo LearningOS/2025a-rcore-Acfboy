@@ -4,11 +4,10 @@ use alloc::sync::Arc;
 
 use crate::{
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str, MapPermission, VirtAddr},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
-    },
+        add_task, current_task, current_user_token, exit_current_and_run_next, get_app_data_by_name, get_phy_addr_in_cur_space, insert_in_current, is_vpn_in_space, spawn_new_task, suspend_current_and_run_next, unmap_area_in_current
+    }, timer::{get_time_ms, get_time_us},
 };
 
 #[repr(C)]
@@ -105,30 +104,67 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    let sec = get_time_ms() / 1000;
+    let usec = get_time_us() - sec * 100_0000;
+    let ts_addr_0 = get_phy_addr_in_cur_space(VirtAddr::from(ts as usize));
+    let ts_addr_1 = get_phy_addr_in_cur_space(VirtAddr::from((ts as usize) + 8));
+    if ts_addr_0.is_none() || ts_addr_1.is_none() {
+        -1
+    } else {
+        let addr_0 = ts_addr_0.unwrap() as *mut usize;
+        let addr_1 = ts_addr_1.unwrap() as *mut usize;
+        unsafe {
+            *addr_0 = sec;
+            *addr_1 = usec;
+        }
+        0
+    }
 }
 
 /// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_mmap",
         current_task().unwrap().pid.0
     );
-    -1
+    let end = VirtAddr::from(start + len);
+    // let end_c = VirtAddr::from(start + len - 1);
+    let start = VirtAddr::from(start);
+    if prot & !0x7 != 0 || prot & 0x7 == 0 || !start.aligned() {
+        return -1;
+    }
+    let start_vpn = start.floor();
+    let end_vpn = end.ceil();
+    for i in start_vpn.0 .. end_vpn.0 {
+        if is_vpn_in_space(i) {
+            return -1;
+        }
+    }
+    insert_in_current(start, end, MapPermission::from_prot(prot));
+    0
 }
 
 /// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
+pub fn sys_munmap(start: usize, len: usize) -> isize {
     trace!(
         "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let end = VirtAddr::from(start + len);
+    let start = VirtAddr::from(start);
+    if !start.aligned() {
+        return -1;
+    }
+    let start_vpn = start.floor();
+    let end_vpn = end.ceil();
+    for i in start_vpn.0 .. end_vpn.0 {
+        if !is_vpn_in_space(i) {
+            return -1;
+        }
+    }
+    unmap_area_in_current(start_vpn, end_vpn); 
+    0
 }
 
 /// change data segment size
@@ -143,19 +179,32 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+pub fn sys_spawn(path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_spawn",
         current_task().unwrap().pid.0
     );
-    -1
+    let name = translated_str(current_user_token(), path);
+    if let Some(data) = get_app_data_by_name(&name) {
+        let new_task = spawn_new_task(&data);
+        let pid = new_task.pid.0;
+        add_task(new_task);
+        pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if prio >= 2 {
+        current_task().unwrap().set_priority(prio as u8);
+        prio
+    } else {
+        -1
+    }
 }
