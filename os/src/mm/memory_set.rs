@@ -423,6 +423,24 @@ bitflags! {
     }
 }
 
+impl MapPermission {
+    /// Convert prot to MapPermission
+    pub fn from_prot(prot: usize) -> Self {
+        let mut permission = MapPermission::empty();
+        if prot & 1 == 1 {
+            permission.insert(MapPermission::R);
+        }
+        if prot & 2 == 2 {
+            permission.insert(MapPermission::W);
+        }
+        if prot & 4 == 4 {
+            permission.insert(MapPermission::X);
+        }
+        permission.insert(MapPermission::U);
+        permission
+    }
+}
+
 /// remap test in kernel space
 #[allow(unused)]
 pub fn remap_test() {
