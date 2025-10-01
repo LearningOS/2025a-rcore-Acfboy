@@ -5,7 +5,8 @@
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
 use super::File;
-use crate::drivers::BLOCK_DEVICE;
+use crate::fs::StatMode;
+use crate::{drivers::BLOCK_DEVICE, fs::Stat};
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
 use alloc::sync::Arc;
@@ -101,6 +102,21 @@ impl OpenFlags {
     }
 }
 
+/// Get the child inode id of root.
+pub fn find_child_id_of_root(name: &str) -> Option<u32> {
+    ROOT_INODE.find_child_inode_id(name)
+}
+
+/// Create a link to old file.
+pub fn create_link(name: &str, old_id: u32) {
+    ROOT_INODE.create_link(name, old_id);
+}
+
+/// Remove a link
+pub fn unlink_child(name: &str) -> bool {
+    ROOT_INODE.unlink(name)
+}
+
 /// Open a file
 pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     let (readable, writable) = flags.read_write();
@@ -155,5 +171,23 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    /// Get stat
+    fn stat(&self) -> Stat {
+        let inode = self.inner.exclusive_access().inode.clone();
+        let ino = inode.get_id() as u64;
+        let mode = if inode.is_dir() {
+            StatMode::DIR
+        } else {
+            StatMode::FILE
+        };
+        let nlink = inode.links();
+        Stat {
+            dev: 0,
+            ino,
+            mode,
+            nlink,
+            pad: [0; 7]
+        }
     }
 }
