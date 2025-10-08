@@ -7,7 +7,7 @@ use super::{add_task, SignalFlags};
 use super::{pid_alloc, PidHandle};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
-use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
+use crate::sync::{Condvar, DeadlockDetector, Mutex, Semaphore, UPSafeCell};
 use crate::trap::{trap_handler, TrapContext};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
@@ -49,6 +49,12 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// enable deadlock detect
+    pub deadlock_detector_enabled: bool,
+    /// mutex deadlock detector
+    pub mutex_deadlock_detector: DeadlockDetector,
+    /// semaphore deadlock detector
+    pub semaphore_deadlock_detector: DeadlockDetector,
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +125,9 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detector_enabled: false,
+                    mutex_deadlock_detector: DeadlockDetector::default(),
+                    semaphore_deadlock_detector: DeadlockDetector::default()
                 })
             },
         });
@@ -245,6 +254,9 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detector_enabled: false,
+                    mutex_deadlock_detector: DeadlockDetector::default(),
+                    semaphore_deadlock_detector: DeadlockDetector::default()
                 })
             },
         });
@@ -281,5 +293,10 @@ impl ProcessControlBlock {
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+    /// enable deadlock detect, assume it always assume at the beginning, so don't need to update detector
+    pub fn enable_deadlock_detect(&self) {
+        let mut inner = self.inner_exclusive_access();
+        inner.deadlock_detector_enabled = true;
     }
 }

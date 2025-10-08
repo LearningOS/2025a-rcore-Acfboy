@@ -7,6 +7,8 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{ProcessControlBlock, TaskContext, TaskControlBlock};
+use crate::config::PAGE_SIZE_BITS;
+use crate::mm::VirtAddr;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
@@ -126,5 +128,27 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     drop(processor);
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
+    }
+}
+
+/// Get the physical address of an virtual address in current app's space
+pub fn get_phy_addr_in_cur_space(addr: VirtAddr) -> Option<usize> {
+    let current = PROCESSOR.exclusive_access().current();
+    let vpn = addr.floor();
+    let offset = addr.page_offset();
+    if let Some(app) = current {
+        let inner = app.inner_exclusive_access();
+        let ppe_opt = inner.res.as_ref().unwrap().process.upgrade().unwrap().inner_exclusive_access().memory_set.translate(vpn);
+        if let Some(ppe) = ppe_opt {
+            if ppe.is_valid() && ppe.writable() {
+                Some((ppe.ppn().0 << PAGE_SIZE_BITS) + offset)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
     }
 }
